@@ -1,0 +1,117 @@
+<!-- FileServer page: lists files in /Applications/ as a table -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Retro.Serv</title>
+  <style>
+    /* 90s retro styling */
+    *{box-sizing:border-box}
+    html, body { height: 100%; }
+    body{
+      margin:0;
+      /* full-screen fixed gradient that does not repeat */
+      background: linear-gradient(180deg,#004080 0%, #002244 100%);
+      background-repeat: no-repeat;
+      background-attachment: fixed;
+      background-size: cover;
+      color:#ffffff;
+      font-family: 'Courier New', Courier, monospace;
+      padding:18px;
+      min-height: 100vh;
+    }
+    /* center content in an old-school boxed layout */
+    .wrap{
+      width:950px;
+      margin:12px auto;
+      background: #c0dffd;
+      border:6px double #000;
+      padding:12px;
+      box-shadow:8px 8px 0 rgba(0,0,0,0.6);
+    }
+    /* Big pixel-ish title */
+    h1{
+      margin:0 0 8px;
+      font-size:42px;
+      color:#ffff00;
+      text-shadow:2px 2px 0 #ff00ff, 4px 4px 0 #00ff00;
+      letter-spacing:2px;
+    }
+    /* scrolling marquee underneath title for authentic 90s feel */
+    marquee{background:#000;color:#00ff00;padding:6px;border:2px inset #fff;margin:8px 0}
+
+    /* controls area with chunky 90's buttons */
+    .controls{display:flex;gap:8px;align-items:center;margin:14px 0 18px}
+    input[type="search"]{padding:6px;border:2px inset #fff;background:#ffffff;color:#000;font-weight:bold}
+    button{padding:6px 10px;border:2px outset #fff;background:#ffcc00;color:#000;font-weight:bold;cursor:pointer}
+    a{color:#0000ff;font-weight:bold}
+
+    /* table uses old-school borders */
+    table{width:100%;border-collapse:collapse;background:#fff;color:#000}
+    thead th{text-align:left;padding:8px;border:3px solid #000;background:#ffcc00}
+    tbody tr:nth-child(even){background:#fffbde}
+    td{padding:8px;border:2px solid #000}
+    a.file-link{color:#0000ff}
+    .type-badge{font-size:12px;padding:2px 6px;border:1px solid #000;background:#fff;color:#000}
+    .meta{color:#000;font-size:13px}
+    .notice{margin:12px 0;color:#000;background:#fff;padding:6px;border:2px solid #000}
+
+    /* small-screen fallback (not 90s, but usable) */
+    @media (max-width:980px){
+      .wrap{width:auto;margin:8px}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+  <h1>Retro.Serv</h1>
+  <marquee behavior="scroll" scrollamount="6">Welcome to Retro.Serv - Browse &amp; Download files from a webserver!</marquee>
+    <div class="controls">
+      <button id="back" title="Go up one level">←</button>
+      <input id="filter" type="search" placeholder="Filter by name..." />
+      <button id="refresh">Refresh</button>
+      <div style="flex:1"></div>
+      <a href="plain_viewer.html" target="_blank">Plain Viewer</a>
+      <span class="meta">Browsing: <strong id="browsing-path">/Applications/</strong></span>
+    </div>
+
+    <div id="container">
+      <div class="notice" id="status">Loading...</div>
+      <table id="files-table" aria-live="polite" style="display:none">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Size</th><th>Link</th><th>Download</th></tr>
+        </thead>
+        <tbody id="files-body"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+  (function(){
+    var container = document.getElementById('container');
+    function showLegacy(){
+      container.innerHTML = '<div class="notice">Your browser appears too old for the modern viewer. <a href="/legacy/">Open legacy listing</a></div>' +
+        '<iframe src="/legacy/" style="width:100%;height:480px;border:1px solid #000;background:#fff"></iframe>';
+    }
+
+    // Basic ES5-compatible feature detection
+    var supportsModern = (typeof fetch === 'function') && (typeof Promise !== 'undefined') && (typeof DOMParser !== 'undefined') && (typeof URL !== 'undefined') && (typeof document.querySelector === 'function') && (typeof document.addEventListener === 'function');
+    if(!supportsModern){
+      showLegacy();
+      return;
+    }
+
+    // Dynamically load the modern script (so old browsers that choke on ES6 won't parse it)
+    try{
+      var s = document.createElement('script');
+      s.src = '/filepage-modern.js';
+      s.defer = true;
+      document.body.appendChild(s);
+    }catch(e){
+      showLegacy();
+    }
+  })();
+  </script>
+</body>
+</html>
