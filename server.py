@@ -266,18 +266,55 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     self.wfile.write(b'Missing file')
                     return
 
-                # sanitize rel and resolve target dir
-                rel = rel.lstrip('/')
-                rel_parts = [p for p in rel.split('/') if p and p != '..']
+                # Robustly percent-decode the submitted path and filename so
+                # clients that send encoded or double-encoded values are handled
+                # correctly (e.g. %2520 -> %20 -> space).
+                def _decode_multi(s, rounds=3):
+                    try:
+                        for _ in range(rounds):
+                            s2 = unquote_plus(s)
+                            if s2 == s:
+                                break
+                            s = s2
+                    except Exception:
+                        try:
+                            s = unquote_plus(s)
+                        except Exception:
+                            pass
+                    return s
+
+                # decode filename if provided in the Content-Disposition header
+                if filename:
+                    try:
+                        filename = _decode_multi(filename)
+                        # Ensure basename to avoid directory traversal
+                        filename = os.path.basename(filename)
+                    except Exception:
+                        filename = os.path.basename(filename)
+
+                # decode and normalize the uploaded 'path' field
+                rel_raw = rel or ''
+                rel_decoded = _decode_multi(rel_raw)
+                rel_norm = rel_decoded.lstrip('/')
+                # decode each segment individually (defense-in-depth)
+                rel_parts = [ _decode_multi(p) for p in rel_norm.split('/') if p and p != '..' ]
+
                 # If the client sent the mounted prefix (e.g. 'Applications/...'),
                 # strip it so uploads go into the current directory being viewed
                 # rather than creating an extra 'Applications' folder inside BROWSE_DIR.
                 mount_root = MOUNT_PREFIX.strip('/')
                 if rel_parts and rel_parts[0] == mount_root:
                     rel_parts = rel_parts[1:]
+
                 target_dir = BROWSE_DIR or SCRIPT_DIR
                 for p in rel_parts:
                     target_dir = os.path.join(target_dir, p)
+                try:
+                    print("[DEBUG] /upload raw rel:", repr(rel_raw), "decoded:", repr(rel_decoded), "rel_parts:", rel_parts, file=sys.stderr)
+                    print("[DEBUG] /upload target_dir:", target_dir, file=sys.stderr)
+                except Exception:
+                    pass
+
                 os.makedirs(target_dir, exist_ok=True)
                 target_path = os.path.join(target_dir, filename)
 
