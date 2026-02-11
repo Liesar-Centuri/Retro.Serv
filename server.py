@@ -308,7 +308,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             body = self.rfile.read(length).decode('utf-8')
             # parse form-encoded body safely using parse_qs
             qs = parse_qs(body, keep_blank_values=True)
-            rel = (qs.get('path', [''])[0] or '').lstrip('/')
+            # parse and percent-decode the submitted path (handle %20 -> space etc.)
+            rel_raw = (qs.get('path', [''])[0] or '')
+            # Robust decode: handle single- and double-encoded values by decoding up to 3 times
+            rel = rel_raw
+            try:
+                for _ in range(3):
+                    decoded = unquote_plus(rel)
+                    if decoded == rel:
+                        break
+                    rel = decoded
+            except Exception:
+                # fallback to a single decode if something goes wrong
+                try:
+                    rel = unquote_plus(rel)
+                except Exception:
+                    pass
+            rel = rel.lstrip('/')
             name = (qs.get('name', [''])[0] or '')
             if not name:
                 self.send_response(400)
@@ -351,17 +367,50 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # delete a file or directory. Expects form-encoded body: path=<mounted-path>&is_dir=1|0
             length = int(self.headers.get('Content-Length', '0'))
             body = self.rfile.read(length).decode('utf-8')
+            # Debug: log incoming delete request body for diagnosis
+            try:
+                print("[DEBUG] /delete body:", repr(body), file=sys.stderr)
+            except Exception:
+                pass
             qs = parse_qs(body, keep_blank_values=True)
-            rel = (qs.get('path', [''])[0] or '').lstrip('/')
+            rel_raw = (qs.get('path', [''])[0] or '')
             is_dir_flag = qs.get('is_dir', ['0'])[0]
-            # normalize and strip mount prefix if present
-            rel_parts = [p for p in rel.split('/') if p and p != '..']
+            # Robust percent-decode: handle single- and double-encoded values (e.g. %2520 -> %20 -> space)
+            def _decode_multi(s, rounds=3):
+                try:
+                    for _ in range(rounds):
+                        s2 = unquote_plus(s)
+                        if s2 == s:
+                            break
+                        s = s2
+                except Exception:
+                    try:
+                        s = unquote_plus(s)
+                    except Exception:
+                        pass
+                return s
+
+            rel_decoded = _decode_multi(rel_raw)
+            # strip leading slash and normalize
+            rel_norm = rel_decoded.lstrip('/')
+            # split and decode each path segment (defense-in-depth)
+            rel_parts = [ _decode_multi(p) for p in rel_norm.split('/') if p and p != '..' ]
+            try:
+                print("[DEBUG] raw rel:", repr(rel_raw), "decoded:", repr(rel_decoded), "rel_parts:", rel_parts, file=sys.stderr)
+            except Exception:
+                pass
             mount_root = MOUNT_PREFIX.strip('/')
             if rel_parts and rel_parts[0] == mount_root:
                 rel_parts = rel_parts[1:]
             target = BROWSE_DIR or SCRIPT_DIR
             for p in rel_parts:
                 target = os.path.join(target, p)
+            try:
+                print("[DEBUG] resolved target:", target, "abs:", os.path.abspath(target), file=sys.stderr)
+                print("[DEBUG] base:", BROWSE_DIR or SCRIPT_DIR, "abs base:", os.path.abspath(BROWSE_DIR or SCRIPT_DIR), file=sys.stderr)
+                print("[DEBUG] exists:", os.path.exists(target), file=sys.stderr)
+            except Exception:
+                pass
             # Ensure target is within allowed base
             base = BROWSE_DIR or SCRIPT_DIR
             try:
