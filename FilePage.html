@@ -42,7 +42,14 @@
     marquee{background:#000;color:#00ff00;padding:6px;border:2px inset #fff;margin:8px 0}
 
     /* controls area with chunky 90's buttons */
-    .controls{display:flex;gap:8px;align-items:center;margin:14px 0 18px}
+  .controls{display:flex;gap:8px;align-items:center;margin:14px 0 18px}
+  .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  /* stack title-controls vertically so the file input can sit under the buttons */
+  .title-controls{display:flex;flex-direction:column;gap:6px;align-items:flex-start;margin-left:auto;transform:translateX(50px)}
+  .title-buttons{display:flex;gap:8px;align-items:center}
+  .search-box{display:flex;flex-direction:column;gap:6px}
+  .browsing-footer{margin-top:14px;padding:8px;background:#fff;color:#000;text-align:left;border:2px solid #000}
+  .browsing-footer .meta{font-size:13px}
     input[type="search"]{padding:6px;border:2px inset #fff;background:#ffffff;color:#000;font-weight:bold}
     button{padding:6px 10px;border:2px outset #fff;background:#ffcc00;color:#000;font-weight:bold;cursor:pointer}
     a{color:#0000ff;font-weight:bold}
@@ -65,25 +72,38 @@
 </head>
 <body>
   <div class="wrap">
-  <h1>Retro.Serv</h1>
-  <marquee behavior="scroll" scrollamount="6">Welcome to Retro.Serv - Browse &amp; Download files from a webserver!</marquee>
+    <div class="header">
+      <h1>Retro.Serv</h1>
+      <div class="title-controls">
+        <div class="title-buttons">
+          <button id="upload-btn">Upload</button>
+          <button id="mkdir-btn">New Folder</button>
+        </div>
+        <input id="upload-file" type="file" />
+      </div>
+    </div>
+    <marquee behavior="scroll" scrollamount="6">Welcome to Retro.Serv - Browse &amp; Download files from a webserver!</marquee>
     <div class="controls">
       <button id="back" title="Go up one level">←</button>
-      <input id="filter" type="search" placeholder="Filter by name..." />
+      <div class="search-box">
+        <input id="filter" type="search" placeholder="Filter by name..." />
+      </div>
       <button id="refresh">Refresh</button>
       <div style="flex:1"></div>
       <a href="plain_viewer.html" target="_blank">Plain Viewer</a>
-      <span class="meta">Browsing: <strong id="browsing-path">/Applications/</strong></span>
-    </div>
+  </div>
 
-    <div id="container">
+      <div id="container">
       <div class="notice" id="status">Loading...</div>
       <table id="files-table" aria-live="polite" style="display:none">
         <thead>
-          <tr><th>Name</th><th>Type</th><th>Size</th><th>Link</th><th>Download</th></tr>
+          <tr><th>Name</th><th>Type</th><th>Size</th><th>Link</th><th>Download</th><th>Delete</th></tr>
         </thead>
         <tbody id="files-body"></tbody>
       </table>
+      <div class="browsing-footer">
+        <span class="meta">Browsing: <strong id="browsing-path">/Applications/</strong></span>
+      </div>
     </div>
   </div>
 

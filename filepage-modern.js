@@ -9,6 +9,9 @@
   const refreshBtn = document.getElementById('refresh');
   const backBtn = document.getElementById('back');
   const browsingEl = document.getElementById('browsing-path');
+  const uploadInput = document.getElementById('upload-file');
+  const uploadBtn = document.getElementById('upload-btn');
+  const mkdirBtn = document.getElementById('mkdir-btn');
 
   function normalizePath(p){
     if(!p) return '/';
@@ -21,7 +24,7 @@
 
   function setPath(p){
     currentPath = normalizePath(p);
-    browsingEl.textContent = currentPath;
+  if(browsingEl) browsingEl.textContent = currentPath;
     // enable/disable back button (do not go above BASE)
     backBtn.disabled = (currentPath === normalizePath(BASE));
   }
@@ -107,11 +110,44 @@
         }
         downloadTd.appendChild(dlBtn);
 
+        // Delete button
+        const deleteTd = document.createElement('td');
+        const delBtn = document.createElement('button');
+        delBtn.textContent = 'Delete';
+        delBtn.style.padding = '6px 10px';
+        delBtn.style.borderRadius = '6px';
+        delBtn.style.cursor = 'pointer';
+        delBtn.style.background = '#ff6666';
+        delBtn.style.color = '#fff';
+        if(row.name === '..'){
+          delBtn.disabled = true;
+        } else {
+          delBtn.addEventListener('click', async (e)=>{
+            e.preventDefault();
+            const pretty = row.name + (row.isDir ? ' (directory)' : '');
+            const ok = confirm('Delete ' + pretty + '? This cannot be undone.');
+            if(!ok) return;
+            try{
+              statusEl.style.display=''; statusEl.textContent='Deleting...';
+              const body = 'path=' + encodeURIComponent(row.path) + '&is_dir=' + (row.isDir? '1':'0');
+              const res = await fetch('/delete', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body });
+              if(!res.ok) throw new Error('HTTP ' + res.status);
+              const j = await res.json();
+              statusEl.style.display='none';
+              loadList(currentPath);
+            }catch(err){
+              statusEl.textContent = 'Delete failed: ' + err.message;
+            }
+          });
+        }
+        deleteTd.appendChild(delBtn);
+
         tr.appendChild(nameTd);
         tr.appendChild(typeTd);
         tr.appendChild(sizeTd);
         tr.appendChild(linkTd);
         tr.appendChild(downloadTd);
+  tr.appendChild(deleteTd);
         tbody.appendChild(tr);
 
         // fetch file size for files using HEAD (async, best-effort)
@@ -142,8 +178,10 @@
         }
       }
 
-      statusEl.style.display = 'none';
-      table.style.display = '';
+  // Ensure the browsing footer reflects the canonical current path
+  try{ setPath(currentPath); }catch(e){}
+  statusEl.style.display = 'none';
+  table.style.display = '';
       applyFilter();
     }catch(err){
       statusEl.textContent = 'Failed to load /Applications/: ' + err.message + '.\nMake sure the server is running and /Applications/ exists.';
@@ -205,6 +243,50 @@
       loadList(parent);
     }
   });
+
+  // Upload handling
+  if(uploadBtn){
+    uploadBtn.addEventListener('click', async function(){
+      const file = uploadInput && uploadInput.files && uploadInput.files[0];
+      if(!file){ alert('Select a file first'); return; }
+      const form = new FormData();
+      // send relative path without leading slash
+      const rel = currentPath.replace(/^\//,'');
+      form.append('path', rel);
+      form.append('file', file, file.name);
+      try{
+        statusEl.style.display=''; statusEl.textContent='Uploading...';
+        const res = await fetch('/upload', { method: 'POST', body: form });
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        const j = await res.json();
+        statusEl.style.display='none';
+        // refresh listing
+        loadList(currentPath);
+      }catch(err){
+        statusEl.textContent = 'Upload failed: ' + err.message;
+      }
+    });
+  }
+
+  // Create directory handling
+  if(mkdirBtn){
+    mkdirBtn.addEventListener('click', async function(){
+      const name = prompt('Folder name:');
+      if(!name) return;
+      const rel = currentPath.replace(/^\//,'');
+      const body = 'path=' + encodeURIComponent(rel) + '&name=' + encodeURIComponent(name);
+      try{
+        statusEl.style.display=''; statusEl.textContent='Creating folder...';
+        const res = await fetch('/mkdir', { method: 'POST', headers: {'Content-Type':'application/x-www-form-urlencoded'}, body });
+        if(!res.ok) throw new Error('HTTP ' + res.status);
+        const j = await res.json();
+        statusEl.style.display='none';
+        loadList(currentPath);
+      }catch(err){
+        statusEl.textContent = 'Create folder failed: ' + err.message;
+      }
+    });
+  }
 
   // initial load
   setPath(BASE);

@@ -10,8 +10,9 @@ import http.server
 import socketserver
 import os
 import sys
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, unquote_plus, parse_qs
 import html as html_escape
+import shutil
 
 
 # script directory is the webserver root (HTML/JS/CSS served from here)
@@ -88,6 +89,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 parts.append('<th style="padding:10px;border:3px solid #000;font-family:Courier, monospace;">Size</th>')
                 parts.append('<th style="padding:10px;border:3px solid #000;font-family:Courier, monospace;">Link</th>')
                 parts.append('<th style="padding:10px;border:3px solid #000;font-family:Courier, monospace;">Download</th>')
+                parts.append('<th style="padding:10px;border:3px solid #000;font-family:Courier, monospace;">Delete</th>')
                 parts.append('</tr>')
                 # Add a Back row to navigate one level up (keeps table-only output)
                 if rel:
@@ -120,6 +122,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         link_html = f'<a href="{html_escape.escape(mount_href)}" style="color:#0000ff;">Open</a>'
                         # download styled as yellow button
                         download_html = f'<a href="{html_escape.escape(mount_href)}" style="display:inline-block;padding:6px 12px;background:#ffcc00;border:2px solid #c68f00;color:#000;text-decoration:none;font-weight:bold;border-radius:6px;">Download</a>'
+                    # compute delete link (mount path for both files and directories)
+                    mount_href = MOUNT_PREFIX + href
                     parts.append(f'<tr style="background:{row_bg};">')
                     # Name column: make it a link so clicking the name behaves like the modern view
                     if is_dir:
@@ -137,14 +141,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     parts.append(f'<td style="padding:12px;border:2px solid #000;text-align:center">{html_escape.escape(size_display)}</td>')
                     parts.append(f'<td style="padding:12px;border:2px solid #000;text-align:center">{link_html}</td>')
                     parts.append(f'<td style="padding:12px;border:2px solid #000;text-align:center">{download_html}</td>')
+                    # delete styled as red button, the script will intercept clicks and POST to /delete
+                    delete_html = f'<a href="#" data-delete="{html_escape.escape(mount_href)}" style="display:inline-block;padding:6px 12px;background:#ff6666;border:2px solid #cc4444;color:#fff;text-decoration:none;font-weight:bold;border-radius:6px;">Delete</a>'
+                    parts.append(f'<td style="padding:12px;border:2px solid #000;text-align:center">{delete_html}</td>')
                     parts.append('</tr>')
                 parts.append('</table>')
                 # Small ES5-compatible script to enable in-place navigation of the legacy table
                 parts.append('<script type="text/javascript">(function(){')
                 parts.append('function ajaxGet(url,cb){var xhr=new XMLHttpRequest();xhr.open("GET",url,true);xhr.onreadystatechange=function(){if(xhr.readyState==4){if(xhr.status>=200&&xhr.status<300)cb(null,xhr.responseText);else cb(new Error("HTTP "+xhr.status));}};try{xhr.send(null);}catch(e){cb(e);}}')
+                parts.append('function ajaxPost(url,body,cb){var xhr=new XMLHttpRequest();xhr.open("POST",url,true);xhr.setRequestHeader("Content-Type","application/x-www-form-urlencoded");xhr.onreadystatechange=function(){if(xhr.readyState==4){if(xhr.status>=200&&xhr.status<300)cb(null,xhr.responseText);else cb(new Error("HTTP "+xhr.status));}};try{xhr.send(body);}catch(e){cb(e);}}')
                 parts.append('function extractTable(html){var low=html.toLowerCase();var si=low.indexOf("<table");if(si===-1) return null;var ei=low.indexOf("</table>",si);if(ei===-1) return null;return html.substring(si,ei+8);}')
                 parts.append('function loadTableFromUrl(url,pushHash){ajaxGet(url,function(err,txt){if(err) return;var tbl=extractTable(txt);if(!tbl) return;var old=document.getElementsByTagName("table")[0];if(old&&old.parentNode){var div=document.createElement("div");div.innerHTML=tbl;old.parentNode.replaceChild(div.firstChild,old);}});if(pushHash){try{window.location.hash=encodeURIComponent(url);}catch(e){}}}')
-                parts.append('function onClick(e){e=e||window.event;var target=e.target||e.srcElement;while(target&&target.nodeName==="#text")target=target.parentNode;while(target&&target.nodeName!=="A")target=target.parentNode;if(!target) return;var href=target.getAttribute("href")||"";')
+                parts.append("function onClick(e){e=e||window.event;var target=e.target||e.srcElement;while(target&&target.nodeName==='#text')target=target.parentNode;while(target&&target.nodeName!==\"A\")target=target.parentNode;if(!target) return;var href=target.getAttribute(\"href\")||\"\";var deletePath=target.getAttribute(\"data-delete\");if(deletePath){if(e.preventDefault)e.preventDefault();else e.returnValue=false; if(!confirm(\"Delete \" + deletePath + \"? This cannot be undone.\")) return; ajaxPost(\"/delete\",\"path=\"+encodeURIComponent(deletePath),function(err,txt){if(err){try{alert('Delete failed: '+err.message);}catch(e){}return;} var cur=window.location.pathname||'/legacy/'; loadTableFromUrl(cur,false);}); return;}")
                 parts.append('if(href.indexOf("/legacy")==0){if(e.preventDefault)e.preventDefault();else e.returnValue=false;loadTableFromUrl(href,true);return;}')
                 parts.append('if(href.indexOf("/Applications/")==0 || href.indexOf("/Files/")==0){try{if(e.preventDefault)e.preventDefault();else e.returnValue=false;window.open(href,"_blank");}catch(ex){}return;}')
                 parts.append('if(window.addEventListener)window.addEventListener("click",onClick,false);else if(window.attachEvent)window.attachEvent("onclick",onClick);')
@@ -164,6 +172,240 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if os.path.exists(os.path.join(SCRIPT_DIR, "FilePage.html")):
                 self.path = "/FilePage.html"
         return super().do_GET()
+
+    def do_POST(self):
+        """Handle uploads and directory creation.
+        POST /upload -> multipart/form-data with fields: path (relative under mount), file (file field)
+        POST /mkdir  -> form-encoded with fields: path, name
+        """
+        parsed = urlparse(self.path)
+        if parsed.path == '/upload':
+            # parse multipart form
+            try:
+                # Minimal multipart/form-data parser to avoid requiring the stdlib 'cgi'
+                # module (some environments may not provide it). This reads the
+                # request body according to Content-Length and splits on the
+                # multipart boundary to extract parts.
+                content_length = int(self.headers.get('Content-Length', '0'))
+                content_type = self.headers.get('Content-Type', '')
+                if not content_type.startswith('multipart/form-data'):
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b'Expected multipart/form-data')
+                    return
+                # extract boundary
+                import re
+                m = re.search(r'boundary=(.+)', content_type)
+                if not m:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b'Missing multipart boundary')
+                    return
+                boundary = m.group(1)
+                # strip optional quotes
+                if boundary.startswith('"') and boundary.endswith('"'):
+                    boundary = boundary[1:-1]
+                boundary = boundary.encode('utf-8')
+
+                body = b''
+                remaining = content_length
+                # read the full body
+                while remaining > 0:
+                    chunk = self.rfile.read(remaining)
+                    if not chunk:
+                        break
+                    body += chunk
+                    remaining -= len(chunk)
+
+                delimiter = b'--' + boundary
+                parts = body.split(delimiter)
+                rel = ''
+                filename = None
+                file_bytes = None
+
+                for part in parts:
+                    if not part or part == b'--' or part == b'--\r\n':
+                        continue
+                    # strip leading CRLF
+                    if part.startswith(b'\r\n'):
+                        part = part[2:]
+                    hdr_end = part.find(b'\r\n\r\n')
+                    if hdr_end == -1:
+                        continue
+                    headers_block = part[:hdr_end].decode('utf-8', errors='replace')
+                    content = part[hdr_end+4:]
+                    # strip trailing CRLF
+                    if content.endswith(b'\r\n'):
+                        content = content[:-2]
+
+                    # find content-disposition header
+                    cd = None
+                    for hline in headers_block.split('\r\n'):
+                        if hline.lower().startswith('content-disposition:'):
+                            cd = hline
+                            break
+                    if not cd:
+                        continue
+                    name_m = re.search(r'name="([^"]+)"', cd)
+                    if not name_m:
+                        continue
+                    field_name = name_m.group(1)
+                    fname_m = re.search(r'filename="([^"]*)"', cd)
+                    if fname_m:
+                        filename = os.path.basename(fname_m.group(1))
+                        file_bytes = content
+                    else:
+                        value = content.decode('utf-8', errors='replace')
+                        if field_name == 'path':
+                            rel = value.strip()
+
+                # basic validation
+                if not filename or file_bytes is None:
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b'Missing file')
+                    return
+
+                # sanitize rel and resolve target dir
+                rel = rel.lstrip('/')
+                rel_parts = [p for p in rel.split('/') if p and p != '..']
+                # If the client sent the mounted prefix (e.g. 'Applications/...'),
+                # strip it so uploads go into the current directory being viewed
+                # rather than creating an extra 'Applications' folder inside BROWSE_DIR.
+                mount_root = MOUNT_PREFIX.strip('/')
+                if rel_parts and rel_parts[0] == mount_root:
+                    rel_parts = rel_parts[1:]
+                target_dir = BROWSE_DIR or SCRIPT_DIR
+                for p in rel_parts:
+                    target_dir = os.path.join(target_dir, p)
+                os.makedirs(target_dir, exist_ok=True)
+                target_path = os.path.join(target_dir, filename)
+
+                # write file bytes to disk (atomic write via temporary file could be added)
+                with open(target_path, 'wb') as out:
+                    out.write(file_bytes)
+
+                resp = __import__('json').dumps({'status':'ok','path': '/' + '/'.join(rel_parts + [filename])})
+                data = resp.encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            except Exception as e:
+                # Log server-side error to stderr to aid debugging (client also receives error text)
+                try:
+                    print("Error handling /upload:", repr(e), file=sys.stderr)
+                except Exception:
+                    pass
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(bytes(str(e), 'utf-8'))
+                return
+        elif parsed.path == '/mkdir':
+            length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(length).decode('utf-8')
+            # parse form-encoded body safely using parse_qs
+            qs = parse_qs(body, keep_blank_values=True)
+            rel = (qs.get('path', [''])[0] or '').lstrip('/')
+            name = (qs.get('name', [''])[0] or '')
+            if not name:
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'Missing name')
+                return
+            # sanitize
+            rel_parts = [p for p in rel.split('/') if p and p != '..']
+            # If the client sent the mounted prefix (e.g. 'Applications/...'), strip it so
+            # we resolve paths relative to the mounted browse directory rather than
+            # creating an extra 'Applications' folder inside BROWSE_DIR.
+            mount_root = MOUNT_PREFIX.strip('/')
+            if rel_parts and rel_parts[0] == mount_root:
+                rel_parts = rel_parts[1:]
+            target_dir = BROWSE_DIR or SCRIPT_DIR
+            for p in rel_parts:
+                target_dir = os.path.join(target_dir, p)
+            new_dir = os.path.join(target_dir, name)
+            try:
+                os.makedirs(new_dir, exist_ok=True)
+                resp = __import__('json').dumps({'status':'ok','path': '/' + '/'.join(rel_parts + [name])})
+                data = resp.encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            except Exception as e:
+                # Log server-side error to stderr to aid debugging (client also receives error text)
+                try:
+                    print("Error handling /mkdir:", repr(e), file=sys.stderr)
+                except Exception:
+                    pass
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(bytes(str(e), 'utf-8'))
+                return
+        elif parsed.path == '/delete':
+            # delete a file or directory. Expects form-encoded body: path=<mounted-path>&is_dir=1|0
+            length = int(self.headers.get('Content-Length', '0'))
+            body = self.rfile.read(length).decode('utf-8')
+            qs = parse_qs(body, keep_blank_values=True)
+            rel = (qs.get('path', [''])[0] or '').lstrip('/')
+            is_dir_flag = qs.get('is_dir', ['0'])[0]
+            # normalize and strip mount prefix if present
+            rel_parts = [p for p in rel.split('/') if p and p != '..']
+            mount_root = MOUNT_PREFIX.strip('/')
+            if rel_parts and rel_parts[0] == mount_root:
+                rel_parts = rel_parts[1:]
+            target = BROWSE_DIR or SCRIPT_DIR
+            for p in rel_parts:
+                target = os.path.join(target, p)
+            # Ensure target is within allowed base
+            base = BROWSE_DIR or SCRIPT_DIR
+            try:
+                if os.path.commonpath([os.path.abspath(base), os.path.abspath(target)]) != os.path.abspath(base):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b'Forbidden')
+                    return
+            except Exception:
+                # fallback: deny
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b'Forbidden')
+                return
+            try:
+                if not os.path.exists(target):
+                    self.send_response(404)
+                    self.end_headers()
+                    self.wfile.write(b'Not found')
+                    return
+                if os.path.isdir(target):
+                    shutil.rmtree(target)
+                else:
+                    os.remove(target)
+                resp = __import__('json').dumps({'status':'ok','path': '/' + '/'.join(rel_parts)})
+                data = resp.encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            except Exception as e:
+                try:
+                    print('Error handling /delete:', repr(e), file=sys.stderr)
+                except Exception:
+                    pass
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(bytes(str(e), 'utf-8'))
+                return
+        else:
+            # fallback to default behavior
+            return super().do_POST()
 
     def translate_path(self, path):
         """Map a URL path to a filesystem path.
@@ -205,9 +447,12 @@ def run(port: int = 8000, browse_dir: str = None):
             sys.exit(2)
         BROWSE_DIR = browse_dir
 
-    # Allow address reuse to avoid "address already in use" on quick restarts
-    class ReuseTCPServer(socketserver.TCPServer):
+    # Allow address reuse and serve each request in its own thread so multiple clients
+    # can download and interact concurrently.
+    class ReuseTCPServer(socketserver.ThreadingTCPServer):
         allow_reuse_address = True
+        # Make worker threads daemon so they won't block shutdown
+        daemon_threads = True
 
     with ReuseTCPServer(("", port), Handler) as httpd:
         sa = httpd.socket.getsockname()
