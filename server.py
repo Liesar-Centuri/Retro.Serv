@@ -8,6 +8,7 @@ Simple static file server using Python standard library.
 import argparse
 import http.server
 import socketserver
+import socket
 import os
 import sys
 from urllib.parse import unquote, urlparse, unquote_plus, parse_qs
@@ -217,6 +218,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     body += chunk
                     remaining -= len(chunk)
 
+                # If the client aborted the upload mid-stream, the number
+                # of bytes read will be less than Content-Length. Detect
+                # that and bail out early so we don't write a truncated file.
+                if len(body) < content_length:
+                    try:
+                        print(f"[DEBUG] /upload incomplete body: expected {content_length} got {len(body)}", file=sys.stderr)
+                    except Exception:
+                        pass
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b'Incomplete upload')
+                    return
+
                 delimiter = b'--' + boundary
                 parts = body.split(delimiter)
                 rel = ''
@@ -318,9 +332,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 os.makedirs(target_dir, exist_ok=True)
                 target_path = os.path.join(target_dir, filename)
 
-                # write file bytes to disk (atomic write via temporary file could be added)
-                with open(target_path, 'wb') as out:
-                    out.write(file_bytes)
+                # write file bytes to a temporary .part file first then
+                # atomically move to the final filename. This ensures that
+                # partially-written uploads can be cleaned up if an error
+                # occurs, and avoids leaving incomplete files when the
+                # client aborts mid-upload.
+                temp_path = target_path + '.part'
+                try:
+                    with open(temp_path, 'wb') as out:
+                        out.write(file_bytes)
+                    # atomic replace when possible
+                    try:
+                        os.replace(temp_path, target_path)
+                    except Exception:
+                        # fallback
+                        os.rename(temp_path, target_path)
+                except Exception:
+                    # cleanup partial file if present
+                    try:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                    except Exception:
+                        pass
+                    raise
 
                 resp = __import__('json').dumps({'status':'ok','path': '/' + '/'.join(rel_parts + [filename])})
                 data = resp.encode('utf-8')
@@ -542,9 +576,21 @@ def run(port: int = 8000, browse_dir: str = None):
 
     with ReuseTCPServer(("", port), Handler) as httpd:
         sa = httpd.socket.getsockname()
-        host = sa[0] if sa[0] else "0.0.0.0"
+        # Determine a sensible local IP address to show to the user.
+        # The server still binds to all interfaces (""/0.0.0.0) but showing
+        # the machine's LAN IP is more useful than printing 0.0.0.0.
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            # a non-routable connect is enough to select the outbound interface
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+        except Exception:
+            # fallback to the bound address or localhost
+            local_ip = sa[0] if sa[0] else "127.0.0.1"
+        host = local_ip
         serve_dir = SCRIPT_DIR
-        print(f"Serving HTTP on {host} port {sa[1]} (http://localhost:{sa[1]}/) ...")
+        print(f"Serving HTTP on {host} port {sa[1]} (http://{host}:{sa[1]}/) ...")
         print(f"Document root (HTML/JS/CSS): {serve_dir}")
         if BROWSE_DIR:
             print(f"Mounted browse directory {BROWSE_DIR} at {MOUNT_PREFIX}")

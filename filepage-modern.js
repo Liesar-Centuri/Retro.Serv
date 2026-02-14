@@ -11,6 +11,7 @@
   const browsingEl = document.getElementById('browsing-path');
   const uploadInput = document.getElementById('upload-file');
   const uploadBtn = document.getElementById('upload-btn');
+  const uploadCancelBtn = document.getElementById('upload-cancel');
   const mkdirBtn = document.getElementById('mkdir-btn');
 
   function normalizePath(p){
@@ -246,7 +247,21 @@
 
   // Upload handling
   if(uploadBtn){
-    uploadBtn.addEventListener('click', async function(){
+    // track current XHR so cancel can abort
+    let currentXhr = null;
+    function setCancelEnabled(enabled){
+      try{
+        if(uploadCancelBtn){
+          uploadCancelBtn.disabled = !enabled;
+          uploadCancelBtn.style.display = enabled ? '' : 'none';
+          uploadCancelBtn.style.opacity = enabled ? '1' : '0.6';
+          uploadCancelBtn.style.cursor = enabled ? 'pointer' : 'default';
+        }
+      }catch(e){}
+    }
+    setCancelEnabled(false);
+
+    uploadBtn.addEventListener('click', function(){
       const file = uploadInput && uploadInput.files && uploadInput.files[0];
       if(!file){ alert('Select a file first'); return; }
       const form = new FormData();
@@ -254,15 +269,62 @@
       const rel = currentPath.replace(/^\//,'');
       form.append('path', rel);
       form.append('file', file, file.name);
+
       try{
         statusEl.style.display=''; statusEl.textContent='Uploading...';
-        const res = await fetch('/upload', { method: 'POST', body: form });
-        if(!res.ok) throw new Error('HTTP ' + res.status);
-        const j = await res.json();
-        statusEl.style.display='none';
-        // refresh listing
-        loadList(currentPath);
+        const xhr = new XMLHttpRequest();
+        currentXhr = xhr;
+        setCancelEnabled(true);
+
+        xhr.open('POST', '/upload', true);
+        xhr.upload.onprogress = function(evt){
+          if(evt.lengthComputable){
+            const pct = Math.floor((evt.loaded / evt.total) * 100);
+            statusEl.textContent = 'Uploading... ' + pct + '%';
+          } else {
+            statusEl.textContent = 'Uploading...';
+          }
+        };
+        xhr.onerror = function(){
+          currentXhr = null;
+          setCancelEnabled(false);
+          statusEl.textContent = 'Upload failed: network error';
+        };
+        xhr.onabort = function(){
+          currentXhr = null;
+          setCancelEnabled(false);
+          statusEl.textContent = 'Upload canceled';
+        };
+        xhr.onload = function(){
+          currentXhr = null;
+          setCancelEnabled(false);
+          try{
+            if(xhr.status >= 200 && xhr.status < 300){
+              statusEl.style.display='none';
+              loadList(currentPath);
+            } else {
+              statusEl.textContent = 'Upload failed: HTTP ' + xhr.status;
+            }
+          }catch(e){
+            statusEl.textContent = 'Upload failed: ' + (e.message || 'unknown');
+          }
+        };
+
+        // wire cancel button
+        if(uploadCancelBtn){
+          uploadCancelBtn.onclick = function(){
+            try{
+              if(currentXhr){
+                currentXhr.abort();
+              }
+            }catch(e){}
+            setCancelEnabled(false);
+          };
+        }
+
+        xhr.send(form);
       }catch(err){
+        setCancelEnabled(false);
         statusEl.textContent = 'Upload failed: ' + err.message;
       }
     });
